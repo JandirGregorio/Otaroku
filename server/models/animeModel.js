@@ -3,10 +3,39 @@ const client = require('../db/redis');
 
 const animeListKey = (user_id) => `anime:user:${user_id}`;
 
+// Redis fallbacks
+const cacheGet = async (key) => {
+  if (!client.isReady) return null;
+  try {
+    return await client.get(key);
+  } catch (err) {
+    console.error('Redis GET failed:', err.message);
+    return null;
+  }
+};
+
+const cacheSet = async (key, value) => {
+  if (!client.isReady) return;
+  try {
+    await client.set(key, value, { EX: 60 });
+  } catch (err) {
+    console.error('Redis SET failed:', err.message);
+  }
+};
+
+const cacheDel = async (key) => {
+  if (!client.isReady) return;
+  try {
+    await client.del(key);
+  } catch (err) {
+    console.error('Redis DEL failed:', err.message);
+  }
+};
+
 // Returns all anime entries for a specific user, ordered by creation time
 module.exports.listByUser = async (user_id) => {
   const key = animeListKey(user_id);
-  const cached = await client.get(key);
+  const cached = await cacheGet(key);
   if (cached) {
     return JSON.parse(cached);
   }
@@ -14,7 +43,7 @@ module.exports.listByUser = async (user_id) => {
   const query = 'SELECT * FROM anime_entries WHERE user_id = $1 ORDER BY entry_id ASC';
   const { rows } = await pool.query(query, [user_id]);
 
-  await client.set(key, JSON.stringify(rows), { EX: 60 });
+  await cacheSet(key, JSON.stringify(rows));
   return rows;
 };
 
@@ -30,7 +59,7 @@ module.exports.create = async (title, status, rating, season, episode, notes, us
   const query = `INSERT INTO anime_entries (title, status, rating, season, episode, notes, user_id)
                   VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`;
   const { rows } = await pool.query(query, [title, status, rating, season, episode, notes, user_id]);
-  await client.del(animeListKey(user_id));
+  await cacheDel(animeListKey(user_id));
   return rows[0];
 };
 
@@ -49,7 +78,7 @@ module.exports.update = async (entry_id, { title, status, season, episode, ratin
                 RETURNING *`;
   const { rows } = await pool.query(query, [title, status, rating, season, episode, notes, entry_id]);
   if (rows[0]) {
-    await client.del(animeListKey(rows[0].user_id));
+    await cacheDel(animeListKey(rows[0].user_id));
   }
   return rows[0];
 };
@@ -59,7 +88,7 @@ module.exports.destroy = async (entry_id) => {
   const query = 'DELETE FROM anime_entries WHERE entry_id = $1 RETURNING *';
   const { rows } = await pool.query(query, [entry_id]);
   if (rows[0]) {
-    await client.del(animeListKey(rows[0].user_id));
+    await cacheDel(animeListKey(rows[0].user_id));
   }
   return rows[0] || null;
 };
