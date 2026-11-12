@@ -1,7 +1,24 @@
 const bcrypt = require('bcrypt');
 const pool = require('./pool');
+const client = require('./redis');
 
 const SALT_ROUNDS = 8;
+
+// Deletes every cached anime list
+const clearAnimeCache = async () => {
+  if (!client.isReady) {
+    console.warn('Redis not connected; cached lists will expire within 60s.');
+    return;
+  }
+  let cleared = 0;
+  for await (const keys of client.scanIterator({ MATCH: 'anime:user:*', COUNT: 100 })) {
+    if (keys.length) {
+      await client.del(keys);
+      cleared += keys.length;
+    }
+  }
+  console.log(`Cleared ${cleared} cached anime list(s).`);
+};
 
 const seed = async () => {
   // Drop tables in reverse dependency order (anime_entries references users via FK)
@@ -59,12 +76,16 @@ const seed = async () => {
 };
 
 seed()
-  .then((users) => {
+  .then(async (users) => {
     console.log('Database seeded successfully.');
     console.log(`  Users: ${users.map((u) => u.username).join(', ')}`);
+    await clearAnimeCache();
   })
   .catch((err) => {
     console.error('Error seeding database:', err);
     process.exit(1);
   })
-  .finally(() => pool.end());
+  .finally(async () => {
+    await pool.end();
+    if (client.isOpen) await client.close();
+  });
